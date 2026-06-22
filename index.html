@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Vengeful Realms · Game Launcher</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- ── Setup Wizard ─────────────────────────────────────────────────────── -->
+    <div class="wizard-backdrop" id="wizardBackdrop">
+        <div class="wizard-card">
+            <div class="wizard-header">
+                <img src="assets/icons/dragon.svg" alt="">
+                <div>
+                    <div class="eyebrow">VENGEFUL REALMS</div>
+                    <h2>Before You Begin</h2>
+                    <p>Checking your system for required components.</p>
+                </div>
+            </div>
+
+            <div class="wizard-checklist">
+                <div class="wizard-row" id="wiz-skyrim">
+                    <div class="wiz-icon" id="wiz-skyrim-icon">⏳</div>
+                    <div class="wiz-info">
+                        <strong>Skyrim Special Edition</strong>
+                        <span id="wiz-skyrim-text">Searching…</span>
+                    </div>
+                </div>
+
+                <div class="wizard-row" id="wiz-skse">
+                    <div class="wiz-icon" id="wiz-skse-icon">⏳</div>
+                    <div class="wiz-info">
+                        <strong>SKSE64</strong>
+                        <span id="wiz-skse-text">Searching…</span>
+                    </div>
+                    <a class="wiz-link" id="wiz-skse-link" href="#" style="display:none;"
+                       onclick="openExternal('https://skse.silverlock.org'); return false;">
+                        Download SKSE64 →
+                    </a>
+                </div>
+
+                <div class="wizard-row" id="wiz-skymp">
+                    <div class="wiz-icon" id="wiz-skymp-icon">⏳</div>
+                    <div class="wiz-info">
+                        <strong>SkyMP / VengefulRealms Files</strong>
+                        <span id="wiz-skymp-text">Checking…</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="wizard-note" id="wizardNote" style="display:none;"></div>
+
+            <div class="wizard-actions">
+                <button class="wizard-path-row" id="wizBrowseBtn">
+                    <span>Game folder: </span>
+                    <span id="wizGamePath">Detecting…</span>
+                    <span class="wiz-browse-hint">Browse</span>
+                </button>
+                <button class="launch-button wizard-continue" id="wizContinueBtn" disabled>
+                    <img src="assets/icons/play.svg" alt="">
+                    Continue to Launcher
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="launcher-shell" id="launcherShell" style="display:none;">
+        <aside class="launcher-sidebar">
+            <div class="crest-block">
+                <div class="crest-ring">
+                    <img src="assets/logo.png" alt="Vengeful Realms crest">
+                </div>
+                <div>
+                    <div class="eyebrow">VENGEFUL</div>
+                    <h1>REALMS</h1>
+                    <span>Official Launcher</span>
+                </div>
+            </div>
+
+            <nav class="launcher-nav" aria-label="Launcher sections">
+                <button class="nav-item active" data-section="play">
+                    <img src="assets/icons/play.svg" alt="">
+                    <span>Play</span>
+                </button>
+                <button class="nav-item" data-section="realms">
+                    <img src="assets/icons/server.svg" alt="">
+                    <span>Realms</span>
+                </button>
+                <button class="nav-item" data-section="mods">
+                    <img src="assets/icons/forge.svg" alt="">
+                    <span>Mod Pack</span>
+                </button>
+                <button class="nav-item" data-section="news">
+                    <img src="assets/icons/scroll.svg" alt="">
+                    <span>Notices</span>
+                </button>
+            </nav>
+
+            <div class="sidebar-card account-card">
+                <div class="small-label">ACCOUNT</div>
+                <div class="account-row">
+                    <img src="assets/icons/user.svg" alt="">
+                    <div>
+                        <strong id="userNameDisplay">Not signed in</strong>
+                        <span id="userAccessText">Login required to launch</span>
+                    </div>
+                </div>
+                <div class="account-actions">
+                    <button class="skyrim-small-button" id="loginHeaderBtn">Login</button>
+                    <button class="skyrim-small-button danger" id="logoutHeaderBtn" style="display:none;">Logout</button>
+                </div>
+            </div>
+
+            <div class="sidebar-card build-card">
+                <div class="small-label">BUILD</div>
+                <div class="build-version">0.9.4 RP</div>
+                <span>Vengeful Realms UI Launcher</span>
+            </div>
+        </aside>
+
+        <main class="launcher-main">
+            <header class="topbar">
+                <div>
+                    <span class="small-label">SELECTED REALM</span>
+                    <h2 id="selectedRealmTitle">No realm selected</h2>
+                </div>
+                <div class="topbar-actions">
+                    <a class="topbar-link-button" id="patreonBtn" href="https://www.patreon.com/cw/VengefulRealmsRP/membership" target="_blank" rel="noopener noreferrer" title="Open Patreon">Patreon</a>
+                    <a class="topbar-link-button" id="discordBtn" href="https://discord.gg/Rj82XPsTuB" target="_blank" rel="noopener noreferrer" title="Join Discord">Discord</a>
+                    <button class="icon-button" id="settingsBtn" title="Settings">
+                        <img src="assets/icons/settings.svg" alt="Settings">
+                    </button>
+                </div>
+            </header>
+
+            <section class="hero-panel section-panel active" id="section-play">
+                <div class="ambient-video-bg" aria-hidden="true">
+                    <video id="ambientVideo" autoplay muted loop playsinline preload="auto" disablepictureinpicture>
+                        <source id="ambientVideoSource" src="assets/video/ambient.mp4" type="video/mp4">
+                    </video>
+                </div>
+                <div class="ambient-video-shade" aria-hidden="true"></div>
+
+                <div class="hero-copy">
+                    <span class="small-label">VENGEFUL REALMS</span>
+                    <h3>Enter a new living and breathing Skyrim Roleplay experience.</h3>
+                    <p>
+                        Select your realm, verify your mod pack, and launch into Vengeful Realms. Time to create your story!
+                    </p>
+
+                    <div class="status-grid">
+                        <div class="status-tile">
+                            <img src="assets/icons/check.svg" alt="">
+                            <div>
+                                <strong id="clientStatusText">Client Ready</strong>
+                                <span>Skyrim Special Edition detected</span>
+                            </div>
+                        </div>
+                        <div class="status-tile">
+                            <img src="assets/icons/download.svg" alt="">
+                            <div>
+                                <strong id="modpackStatusText">Mod Pack Current</strong>
+                                <span id="modpackVersionText">VRP Collection 1.0.0</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="launch-card">
+                    <div class="round-emblem">
+                        <img src="assets/icons/swords.svg" alt="Launch emblem">
+                    </div>
+                    <span class="small-label">READY CHECK</span>
+                    <h4 id="readyStateTitle">Choose a realm</h4>
+                    <p id="readyStateDescription">Login and select a server before launching.</p>
+                    <button class="launch-button" id="joinGameBtn" disabled>
+                        <img src="assets/icons/play.svg" alt="">
+                        Launch Game
+                    </button>
+                    <div class="launch-note" id="selectedServerInfo">No server selected</div>
+                </div>
+            </section>
+
+            <section class="realm-panel section-panel" id="section-realms">
+                <div class="panel-heading">
+                    <div>
+                        <span class="small-label">REALM SELECTION</span>
+                        <h3>Choose your destination</h3>
+                    </div>
+                    <span class="panel-hint">Ping and population are placeholders for backend connection.</span>
+                </div>
+
+                <div class="server-grid" id="serverGrid">
+                    <article class="server-card" data-server-id="world-1" data-server-name="World 1" data-access-required="public">
+                        <div class="server-card-icon"><img src="assets/icons/world.svg" alt=""></div>
+                        <div class="server-meta">
+                            <h4>World 1</h4>
+                            <span>Vengeful Realms World 1</span>
+                        </div>
+                        <div class="server-status online">Online</div>
+                        <div class="server-details">
+                            <span>Players 42 / 80</span>
+                            <span>32 ms</span>
+                        </div>
+                    </article>
+
+                    <article class="server-card" data-server-id="world-2" data-server-name="World 2" data-access-required="public">
+                        <div class="server-card-icon"><img src="assets/icons/world-rune.svg" alt=""></div>
+                        <div class="server-meta">
+                            <h4>World 2</h4>
+                            <span>Vengeful Realms World 2</span>
+                        </div>
+                        <div class="server-status online">Online</div>
+                        <div class="server-details">
+                            <span>Players 18 / 50</span>
+                            <span>46 ms</span>
+                        </div>
+                    </article>
+
+                    <article class="server-card" data-server-id="whitelist" data-server-name="Whitelist" data-access-required="whitelist">
+                        <div class="server-card-icon"><img src="assets/icons/shield.svg" alt=""></div>
+                        <div class="server-meta">
+                            <h4>Whitelist</h4>
+                            <span>Vengeful Realms Whitelisted World</span>
+                        </div>
+                        <div class="server-status whitelisted">Whitelisted</div>
+                        <div class="server-details">
+                            <span>Authorised only</span>
+                            <span>41 ms</span>
+                        </div>
+                    </article>
+
+                    <article class="server-card" data-server-id="development" data-server-name="Development" data-access-required="development">
+                        <div class="server-card-icon"><img src="assets/icons/forge.svg" alt=""></div>
+                        <div class="server-meta">
+                            <h4>Development</h4>
+                            <span>Developer Testing World</span>
+                        </div>
+                        <div class="server-status maintenance">Locked</div>
+                        <div class="server-details">
+                            <span>Developer access</span>
+                            <span>19 ms</span>
+                        </div>
+                    </article>
+                </div>
+            </section>
+
+            <section class="mods-panel section-panel" id="section-mods">
+                <div class="panel-heading">
+                    <div>
+                        <span class="small-label">MOD PACK</span>
+                        <h3>Installation status</h3>
+                    </div>
+                    <button class="skyrim-small-button" id="checkUpdatesBtn">Check Updates</button>
+                </div>
+
+                <div class="mod-status-card">
+                    <div class="mod-status-top">
+                        <div>
+                            <h4>Vengeful Realms Required Collection</h4>
+                            <span id="downloadStateLabel">No active download</span>
+                        </div>
+                        <strong id="downloadPercentText">100%</strong>
+                    </div>
+                    <div class="progress-frame">
+                        <div class="progress-fill" id="downloadProgressFill" style="width:100%;"></div>
+                    </div>
+                    <div class="mod-actions">
+                        <button class="skyrim-small-button" id="repairBtn">Verify Files</button>
+                        <button class="skyrim-small-button" id="openFolderBtn">Open Folder</button>
+                        <button class="skyrim-small-button danger" id="uninstallBtn">Uninstall VGR Files</button>
+                    </div>
+                </div>
+
+                <div class="requirement-list">
+                    <div class="requirement-row ready">
+                        <img src="assets/icons/check.svg" alt="">
+                        <span>Skyrim Special Edition</span>
+                        <strong>Detected</strong>
+                    </div>
+                    <div class="requirement-row ready">
+                        <img src="assets/icons/check.svg" alt="">
+                        <span>Vengeful Realms Mod Pack</span>
+                        <strong>Current</strong>
+                    </div>
+                    <div class="requirement-row warning">
+                        <img src="assets/icons/warning.svg" alt="">
+                        <span>Launcher backend bridge</span>
+                        <strong>Connect later</strong>
+                    </div>
+                </div>
+            </section>
+
+            <section class="news-panel section-panel" id="section-news">
+                <div class="panel-heading">
+                    <div>
+                        <span class="small-label">REALM NOTICES</span>
+                        <h3>Latest updates</h3>
+                    </div>
+                </div>
+
+                <div class="news-grid">
+                    <article class="notice-card featured">
+                        <span>Announcement</span>
+                        <h4>Vengeful Realms launcher interface prepared</h4>
+                        <p>The launcher is styled to match the wider Skyrim-inspired UI suite with bronze dividers, dark translucent panels, red accents, and fantasy iconography.</p>
+                    </article>
+                    <article class="notice-card">
+                        <span>Mod Pack</span>
+                        <h4>Collection verification ready for backend</h4>
+                        <p>The front-end progress bar and file verification buttons are prepared for connection to your actual patcher or launcher executable logic.</p>
+                    </article>
+                    <article class="notice-card">
+                        <span>Roleplay</span>
+                        <h4>Realm cards support live server data</h4>
+                        <p>Population, ping, realm lock state, and launch connection details can be injected through the JavaScript API.</p>
+                    </article>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <div id="authModal" class="modal-backdrop" aria-hidden="true">
+        <div class="modal-card auth-modal-content">
+            <div class="modal-header">
+                <img src="assets/icons/user.svg" alt="">
+                <span>Account Access</span>
+                <button class="modal-close" id="closeAuthModalBtn" aria-label="Close">×</button>
+            </div>
+
+            <div id="loginFormModal" class="auth-form-modal">
+                <label>Email Address</label>
+                <input type="email" id="loginEmailModal" placeholder="name@vengefulrealms.com" maxlength="100">
+                <label>Password</label>
+                <input type="password" id="loginPasswordModal" placeholder="Your beta password" maxlength="50">
+                <label class="remember-me-row">
+                    <input type="checkbox" id="rememberMeModal" checked>
+                    <span>Keep me signed in</span>
+                </label>
+                <button id="loginBtnModal" class="auth-btn-modal">Login</button>
+                <p>No account? <button id="showSignupBtnModal" class="link-btn-modal">Create one</button></p>
+            </div>
+
+            <div id="signupFormModal" class="auth-form-modal" style="display:none;">
+                <label>Email Address</label>
+                <input type="email" id="signupEmailModal" placeholder="name@domain.com" maxlength="100">
+                <label>Password</label>
+                <input type="password" id="signupPasswordModal" placeholder="Minimum 6 characters" maxlength="50">
+                <label>Confirm Password</label>
+                <input type="password" id="signupConfirmModal" placeholder="Confirm password" maxlength="50">
+                <button id="signupBtnModal" class="auth-btn-modal">Create Account</button>
+                <p>Already have an account? <button id="showLoginBtnModal" class="link-btn-modal">Login</button></p>
+            </div>
+        </div>
+    </div>
+
+    <div id="settingsModal" class="modal-backdrop" aria-hidden="true">
+        <div class="modal-card settings-modal-content">
+            <div class="modal-header">
+                <img src="assets/icons/settings.svg" alt="">
+                <span>Launcher Settings</span>
+                <button class="modal-close" id="closeSettingsModalBtn" aria-label="Close">×</button>
+            </div>
+
+            <div class="settings-body">
+                <label>Game Directory</label>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <input id="gamePathInput" placeholder="Path to Skyrim Special Edition folder" style="flex:1;">
+                    <button class="skyrim-small-button" id="browseFolderBtn">Browse</button>
+                </div>
+
+                <label>Launch Arguments</label>
+                <input id="launchArgsInput" value="-vrp -noborder" maxlength="120">
+
+                <div class="settings-grid">
+                    <button class="skyrim-small-button" id="saveSettingsBtn">Save Settings</button>
+                    <button class="skyrim-small-button" id="resetSettingsBtn">Reset</button>
+                </div>
+                <small>These controls are frontend-ready and can be wired into your executable backend.</small>
+            </div>
+        </div>
+    </div>
+	
+	<div id="promptModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:black; padding:20px; border-radius:8px; z-index:1000; box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+		<h3 id="promptTitle"></h3>
+		<input type="text" id="promptInput" style="width:100%; padding:8px; margin:10px 0;">
+		<button onclick="resolvePrompt()" style="background:black; color:white; padding:8px 16px; margin:5px; cursor:pointer;">OK</button>
+		<button onclick="rejectPrompt()" style="background:black; color:white; padding:8px 16px; margin:5px; cursor:pointer;">Cancel</button>
+	</div>
+	<div id="promptOverlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:999;"></div>
+
+    <div id="toastContainer"></div>
+
+    <script src="script.js"></script>
+</body>
+</html>

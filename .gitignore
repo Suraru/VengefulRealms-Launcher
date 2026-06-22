@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Electron Forge build output
+out/
+.forge/
+
+# skymp-payload contains large binary game files (DLLs, SWF, PAK, etc.)
+# Obtain it separately — see README for instructions.
+skymp-payload/
+skymp-payload-backup-pre-additions/
+
+# Runtime launcher config (generated per-machine in AppData, not source)
+VGF-LauncherFiles/
+
+# Launcher user data (generated at runtime, machine-specific)
+*.log
+
+# Large binary assets (share separately)
+assets/video/ambient.mp4
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+desktop.ini
