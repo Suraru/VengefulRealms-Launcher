@@ -104,5 +104,5 @@ VengefulRealms-Launcher/
 
 ## Authors
 
-- **Metadraconis** — original launcher UI and Electron scaffolding
-- **Rain (Eruvos)** — SkyMP integration, install/uninstall system, voice chat wiring
+- **Metadraconis** — Head Development
+- **Rain (Eruvos)** — Launcher integration, install/uninstall system
