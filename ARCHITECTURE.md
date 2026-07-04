@@ -89,6 +89,11 @@ All communication between renderer and main goes through these channels:
 | `uninstall-skymp` | renderer → main | Remove only launcher-installed files using the manifest |
 | `update-client-cfg` | renderer → main | Write `skymp5-client-settings.txt` with server IP and profile ID |
 | `launch-game` | renderer → main | Sync payload (if needed) then spawn `skse64_loader.exe` |
+| `verify-files` | renderer → main | Compare every payload file against its install target by size |
+| `detect-mo2` | renderer → main | Find ModOrganizer.exe via registry and common install paths |
+| `mo2-info` | renderer → main | List MO2 instances, profiles, and executables for a given exe |
+| `launch-mo2` | renderer → main | Sync payload then launch SKSE through MO2 (moshortcut or run) |
+| `browse-file` | renderer → main | Open native file picker dialog |
 | `save-settings` / `load-settings` | renderer ↔ main | Persist game path, profile ID, server IP to AppData |
 | `save-credentials` / `load-credentials` / `clear-credentials` | renderer ↔ main | OS-encrypted "remember me" credential storage |
 
@@ -109,6 +114,22 @@ When a player clicks Install:
 When a player clicks Uninstall:
 - The manifest is read, every tracked file is deleted (with retry logic for Windows file locks), tracked directories are cleaned up, and the manifest itself is removed.
 - Squirrel's `--squirrel-uninstall` hook also triggers this cleanup so uninstalling the launcher via Add/Remove Programs also cleans Skyrim.
+
+---
+
+## Mod Organizer 2 Mode
+
+Optional, toggled in Settings. When enabled:
+
+1. The payload's `Data/` tree deploys into an MO2 mod folder named `VengefulRealms SkyMP` (with a `meta.ini`) instead of the game's `Data/` directory. Root-level files (`livekit.dll`, `livekit_ffi.dll`) still go to the Skyrim folder because MO2's VFS only covers `Data/`.
+2. The mod is activated in the chosen profile's `modlist.txt` (inserted at the top, which is the highest priority, so VGR files win conflicts).
+3. `skymp5-client-settings.txt` is written inside the mod folder so the client reads it through the VFS.
+4. Launch spawns `ModOrganizer.exe` with `-i instance -p profile` and either a `moshortcut://` URL (when the instance has an SKSE executable entry) or the `run` command with the full `skse64_loader.exe` path.
+5. Uninstall removes the mod folder and the `modlist.txt` entry, including via the Squirrel uninstall hook.
+
+Instance discovery parses `ModOrganizer.ini` (portable: next to the exe; global: `%LOCALAPPDATA%\ModOrganizer\<instance>\`), honoring `base_directory`, `mod_directory`, and `profiles_directory` overrides.
+
+For manual launches without the launcher there is `scripts/Launch-VGR-MO2.bat`; edit the paths at the top and double-click.
 
 ---
 

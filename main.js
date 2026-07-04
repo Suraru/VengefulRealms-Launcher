@@ -68,6 +68,24 @@ function runSquirrelUninstallCleanup() {
             const r = tryRemove(d, false);
             if (r.ok && !r.missing) removed.dirs++;
         }
+        // MO2 mode: drop the modlist.txt entries and remove the mod folders
+        if (m.mo2) {
+            const modlistFiles = m.mo2.modlistFiles || (m.mo2.modlistFile ? [m.mo2.modlistFile] : []);
+            for (const mf of modlistFiles) {
+                try {
+                    if (!fs.existsSync(mf)) continue;
+                    const lines = fs.readFileSync(mf, 'utf8').split(/\r?\n/)
+                        .filter(l => !((l.startsWith('+') || l.startsWith('-')) && l.slice(1).trim() === 'VengefulRealms SkyMP'));
+                    fs.writeFileSync(mf, lines.join('\r\n'), 'utf8');
+                } catch (_) {}
+            }
+            const modDirs = m.mo2.modDirs || (m.mo2.modDir ? [m.mo2.modDir] : []);
+            for (const md of modDirs) {
+                const r = tryRemove(md, true);
+                if (r.ok && !r.missing) removed.dirs++;
+                else if (!r.ok) removed.errors.push(`${md}: ${r.error}`);
+            }
+        }
         // Also nuke the generated client settings + livekit dlls if present
         if (m.gameDir) {
             for (const extra of [
@@ -243,15 +261,23 @@ ipcMain.handle('check-prerequisites', (event, gameDir) => {
     results.skse.ok      = loaderExists && dllFiles.length > 0;
     results.skse.version = dllFiles.length > 0 ? dllFiles[0].replace('skse64_', '').replace('.dll', '').replace(/_/g, '.') : null;
 
-    // SkyMP — check for client JS
-    results.skymp.ok = fs.existsSync(path.join(gameDir, 'Data', 'Platform', 'Plugins', 'skymp5-client.js'));
+    // SkyMP — check for client JS, either in game Data or in the MO2 mod folder
+    let skympOk = fs.existsSync(path.join(gameDir, 'Data', 'Platform', 'Plugins', 'skymp5-client.js'));
+    if (!skympOk) {
+        const s = loadSettings();
+        if (s && s.useMO2) {
+            const inst = resolveMO2({ enabled: true, exe: s.mo2Exe, instance: s.mo2Instance });
+            if (inst) skympOk = fs.existsSync(path.join(getMO2ModDir(inst), 'Platform', 'Plugins', 'skymp5-client.js'));
+        }
+    }
+    results.skymp.ok = skympOk;
 
     return results;
 });
 
 // ── IPC: install SkyMP payload ────────────────────────────────────────────────
-ipcMain.handle('install-skymp', (event, gameDir) => {
-    return installSkymp(gameDir);
+ipcMain.handle('install-skymp', (event, { gameDir, mo2 }) => {
+    return installSkymp(gameDir, mo2);
 });
 
 // ── IPC: uninstall SkyMP payload ──────────────────────────────────────────────
@@ -259,21 +285,70 @@ ipcMain.handle('uninstall-skymp', (event, gameDir) => {
     return uninstallSkymp(gameDir);
 });
 
+// ── IPC: verify installed files ───────────────────────────────────────────────
+// Compares every payload file against its install target by byte size, the
+// same cheap check the pre-launch sync uses. Reports instead of fixing.
+ipcMain.handle('verify-files', (event, { gameDir, mo2 }) => {
+    if (!gameDir || !fs.existsSync(gameDir)) {
+        return { success: false, error: 'Game directory not found' };
+    }
+    const payloadDir = path.join(__dirname, 'skymp-payload');
+    if (!fs.existsSync(payloadDir)) {
+        return { success: false, error: 'SkyMP payload missing from launcher install' };
+    }
+    let inst = null;
+    if (mo2 && mo2.enabled) {
+        inst = resolveMO2(mo2);
+        if (!inst) return { success: false, error: 'MO2 instance not found, check MO2 settings' };
+    }
+    const targetFor = makeTargetMapper(gameDir, inst ? getMO2ModDir(inst) : null);
+
+    const missing = [];
+    const mismatched = [];
+    let checked = 0;
+    try {
+        (function walk(relDir) {
+            for (const entry of fs.readdirSync(path.join(payloadDir, relDir), { withFileTypes: true })) {
+                if (entry.name.toLowerCase() === 'desktop.ini') continue;
+                const rel = relDir ? path.join(relDir, entry.name) : entry.name;
+                if (entry.isDirectory()) {
+                    walk(rel);
+                    continue;
+                }
+                checked++;
+                const target = targetFor(rel);
+                if (!fs.existsSync(target)) missing.push(rel);
+                else if (fs.statSync(target).size !== fs.statSync(path.join(payloadDir, rel)).size) mismatched.push(rel);
+            }
+        })('');
+    } catch (err) {
+        return { success: false, error: err.message };
+    }
+    return { success: true, checked, missing, mismatched, ok: missing.length === 0 && mismatched.length === 0 };
+});
+
 // ── IPC: client config ────────────────────────────────────────────────────────
-ipcMain.handle('update-client-cfg', (event, { gameDir, profileID, serverIP }) => {
-    return writeClientSettings(gameDir, parseInt(profileID), serverIP || SERVER_IP);
+ipcMain.handle('update-client-cfg', (event, { gameDir, profileID, serverIP, email, mo2 }) => {
+    // In MO2 mode the settings file lives in the mod folder so the VFS serves it
+    const inst = resolveMO2(mo2);
+    if (mo2 && mo2.enabled && !inst) {
+        return { success: false, error: 'MO2 instance not found, check MO2 settings' };
+    }
+    const platformBase = inst ? getMO2ModDir(inst) : null;
+    return writeClientSettings(gameDir, parseInt(profileID), serverIP || SERVER_IP, { platformBase, email });
 });
 
 // ── Sync payload → Skyrim: Data/Platform subtree ─────────────────────────────
 // Runs silently before every game launch. Walks the payload's Data/Platform
 // directory and overwrites any installed file whose byte size differs from the
 // payload copy. Covers skymp5-client.js, all UI files, and anything added later.
+// destParent is the folder holding Platform: gameDir/Data or the MO2 mod folder.
 // Never throws — a sync failure must never block launch.
-function syncPayloadPlatform(gameDir) {
+function syncPayloadPlatform(destParent) {
     try {
         const src  = path.join(__dirname, 'skymp-payload', 'Data', 'Platform');
-        const dest = path.join(gameDir,   'Data', 'Platform');
-        if (!fs.existsSync(src) || !fs.existsSync(gameDir)) return;
+        const dest = path.join(destParent, 'Platform');
+        if (!fs.existsSync(src) || !fs.existsSync(destParent)) return;
         (function walk(s, d) {
             if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
             for (const entry of fs.readdirSync(s, { withFileTypes: true })) {
@@ -293,6 +368,27 @@ function syncPayloadPlatform(gameDir) {
 }
 
 // ── IPC: launch game ──────────────────────────────────────────────────────────
+// Spawn detached, report success after a short grace period, quit only when the
+// spawn did not error so a failure toast stays readable and the user can retry.
+// Quitting after launch avoids Chromium input conflicts with SkyMP CEF.
+function spawnDetachedThenQuit(exe, args, cwd) {
+    return new Promise((resolve) => {
+        let failed = false;
+        const child = spawn(exe, args, { detached: true, stdio: 'ignore', cwd });
+        child.unref();
+        const timer = setTimeout(() => {
+            if (failed) return;
+            resolve({ success: true });
+            setTimeout(() => app.quit(), 1000);
+        }, 500);
+        child.on('error', (err) => {
+            failed = true;
+            clearTimeout(timer);
+            resolve({ success: false, error: err.message });
+        });
+    });
+}
+
 ipcMain.handle('launch-game', async (event, exePath) => {
     if (!fs.existsSync(exePath)) {
         return { success: false, error: `File not found: ${exePath}` };
@@ -300,22 +396,216 @@ ipcMain.handle('launch-game', async (event, exePath) => {
 
     // Silently sync Data/Platform files (skymp5-client.js, UI files, etc.)
     // before launch so stale installs are auto-corrected without user action.
-    syncPayloadPlatform(path.dirname(exePath));
+    syncPayloadPlatform(path.join(path.dirname(exePath), 'Data'));
 
-    return new Promise((resolve) => {
-        const child = spawn(exePath, [], {
-            detached: true,
-            stdio: 'ignore',
-            cwd: path.dirname(exePath)
-        });
-        child.unref();
-        child.on('error', (err) => resolve({ success: false, error: err.message }));
-        // Quit launcher after launch to avoid Chromium input conflicts with SkyMP CEF
-        setTimeout(() => {
-            resolve({ success: true });
-            setTimeout(() => app.quit(), 1000);
-        }, 500);
-    });
+    return spawnDetachedThenQuit(exePath, [], path.dirname(exePath));
+});
+
+// ── Mod Organizer 2 integration ──────────────────────────────────────────────
+// When MO2 mode is on, the payload's Data files deploy into an MO2 mod folder
+// instead of the game's Data directory and the game launches through MO2's VFS.
+const MO2_MOD_NAME = 'VengefulRealms SkyMP';
+
+// Minimal INI parser, enough for ModOrganizer.ini (sections, key=value, @ByteArray)
+function parseIni(text) {
+    const result = {};
+    let section = '';
+    for (const rawLine of text.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith(';') || line.startsWith('#')) continue;
+        const sec = line.match(/^\[(.+)\]$/);
+        if (sec) { section = sec[1]; result[section] = result[section] || {}; continue; }
+        const eq = line.indexOf('=');
+        if (eq < 0) continue;
+        const key = line.slice(0, eq).trim();
+        let value = line.slice(eq + 1).trim();
+        const ba = value.match(/^@ByteArray\((.*)\)$/s);
+        if (ba) value = ba[1];
+        // Qt quotes values containing commas or special chars, strip the quotes
+        if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) value = value.slice(1, -1);
+        (result[section] = result[section] || {})[key] = value;
+    }
+    return result;
+}
+
+// Read one MO2 instance's directories, profiles, and executable list from its ini
+function readMO2Instance(name, instanceDir) {
+    const iniPath = path.join(instanceDir, 'ModOrganizer.ini');
+    if (!fs.existsSync(iniPath)) return null;
+    let ini;
+    try { ini = parseIni(fs.readFileSync(iniPath, 'utf8')); } catch (_) { return null; }
+    const settings = ini.Settings || {};
+    const general  = ini.General  || {};
+    const baseDir = path.normalize(settings.base_directory || instanceDir);
+    // Optional dirs default under baseDir and may reference %BASE_DIR%
+    const resolveDir = (value, fallback) => value
+        ? path.normalize(value.replace(/%BASE_DIR%/gi, baseDir))
+        : path.join(baseDir, fallback);
+    const modsDir     = resolveDir(settings.mod_directory,      'mods');
+    const profilesDir = resolveDir(settings.profiles_directory, 'profiles');
+    let profiles = [];
+    try {
+        profiles = fs.readdirSync(profilesDir, { withFileTypes: true })
+            .filter(e => e.isDirectory()).map(e => e.name);
+    } catch (_) {}
+    // Executable titles let launch use a moshortcut when one points at SKSE
+    const execs = [];
+    const ce = ini.customExecutables || {};
+    for (const key of Object.keys(ce)) {
+        const m = key.match(/^(\d+)\\title$/);
+        if (m) execs.push({ title: ce[key], binary: ce[`${m[1]}\\binary`] || '' });
+    }
+    return {
+        name,
+        gameName: general.gameName || '',
+        selectedProfile: general.selected_profile || '',
+        modsDir, profilesDir, profiles,
+        executables: execs,
+    };
+}
+
+// Portable instance sits next to the exe, global instances under LOCALAPPDATA
+function listMO2Instances(mo2Exe) {
+    const instances = [];
+    if (mo2Exe && fs.existsSync(mo2Exe)) {
+        const portable = readMO2Instance('', path.dirname(mo2Exe));
+        if (portable) instances.push({ ...portable, portable: true });
+    }
+    const globalRoot = path.join(process.env.LOCALAPPDATA || '', 'ModOrganizer');
+    if (process.env.LOCALAPPDATA && fs.existsSync(globalRoot)) {
+        for (const entry of fs.readdirSync(globalRoot, { withFileTypes: true })) {
+            if (!entry.isDirectory()) continue;
+            const inst = readMO2Instance(entry.name, path.join(globalRoot, entry.name));
+            if (inst) instances.push({ ...inst, portable: false });
+        }
+    }
+    return instances;
+}
+
+function detectMO2Exe() {
+    const { execSync } = require('child_process');
+    // The nxm link handler registration is the most reliable pointer to MO2
+    try {
+        const out = execSync('reg query "HKCU\\Software\\Classes\\nxm\\shell\\open\\command" /ve', { encoding: 'utf8' });
+        const m = out.match(/REG_SZ\s+"?(.+?(?:nxmhandler|ModOrganizer)\.exe)/i);
+        if (m) {
+            const candidate = path.join(path.dirname(m[1]), 'ModOrganizer.exe');
+            if (fs.existsSync(candidate)) return candidate;
+        }
+    } catch (_) {}
+    // Installer builds register an uninstall entry with the install location
+    for (const hive of ['HKLM', 'HKCU']) {
+        try {
+            const out = execSync(`reg query "${hive}\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Mod Organizer 2_is1" /v InstallLocation`, { encoding: 'utf8' });
+            const m = out.match(/InstallLocation\s+REG_SZ\s+(.+)/);
+            if (m) {
+                const candidate = path.join(m[1].trim(), 'ModOrganizer.exe');
+                if (fs.existsSync(candidate)) return candidate;
+            }
+        } catch (_) {}
+    }
+    const candidates = [
+        'C:\\Modding\\MO2\\ModOrganizer.exe',
+        'C:\\MO2\\ModOrganizer.exe',
+        'C:\\Program Files\\Mod Organizer 2\\ModOrganizer.exe',
+        'D:\\Modding\\MO2\\ModOrganizer.exe',
+        'D:\\MO2\\ModOrganizer.exe',
+    ];
+    for (const p of candidates) {
+        if (fs.existsSync(p)) return p;
+    }
+    return null;
+}
+
+// Resolve the saved MO2 selection back to a live instance, null if gone
+function resolveMO2(mo2) {
+    if (!mo2 || !mo2.enabled || !mo2.exe || !fs.existsSync(mo2.exe)) return null;
+    const instances = listMO2Instances(mo2.exe);
+    return instances.find(i => i.name === (mo2.instance || '')) || null;
+}
+
+const getMO2ModDir = (inst) => path.join(inst.modsDir, MO2_MOD_NAME);
+
+// A running MO2 holds the modlist in memory and rewrites modlist.txt on exit,
+// which would silently revert our edits, so block file operations while it runs
+function isMO2Running() {
+    if (process.platform !== 'win32') return false;
+    try {
+        const { execSync } = require('child_process');
+        const out = execSync('tasklist /FI "IMAGENAME eq ModOrganizer.exe" /NH', { encoding: 'utf8' });
+        return /ModOrganizer\.exe/i.test(out);
+    } catch (_) {
+        return false;
+    }
+}
+
+// Payload files under Data map into the MO2 mod folder when MO2 mode is on,
+// everything else (livekit dlls) still belongs in the game root.
+function makeTargetMapper(gameDir, modDir) {
+    return (rel) => {
+        if (!modDir) return path.join(gameDir, rel);
+        const parts = rel.split(path.sep);
+        if (parts[0] === 'Data') return path.join(modDir, ...parts.slice(1));
+        return path.join(gameDir, rel);
+    };
+}
+
+// Flip or insert our +entry in the profile's modlist.txt so the mod is active.
+// Top of modlist.txt is the highest priority, so a new entry goes first.
+function enableModInProfile(inst, profile) {
+    const profileName = profile || inst.selectedProfile;
+    if (!profileName) return { success: false, error: 'No MO2 profile selected' };
+    const modlistFile = path.join(inst.profilesDir, profileName, 'modlist.txt');
+    if (!fs.existsSync(modlistFile)) {
+        return { success: false, error: `MO2 profile modlist not found: ${modlistFile}` };
+    }
+    const lines = fs.readFileSync(modlistFile, 'utf8').split(/\r?\n/);
+    const idx = lines.findIndex(l => (l.startsWith('+') || l.startsWith('-')) && l.slice(1).trim() === MO2_MOD_NAME);
+    if (idx >= 0) {
+        lines[idx] = '+' + MO2_MOD_NAME;
+    } else {
+        const insertAt = lines[0] && lines[0].startsWith('#') ? 1 : 0;
+        lines.splice(insertAt, 0, '+' + MO2_MOD_NAME);
+    }
+    fs.writeFileSync(modlistFile, lines.join('\r\n'), 'utf8');
+    return { success: true, modlistFile };
+}
+
+// ── IPC: Mod Organizer 2 ─────────────────────────────────────────────────────
+ipcMain.handle('detect-mo2', () => detectMO2Exe());
+
+ipcMain.handle('mo2-info', (event, mo2Exe) => ({ instances: listMO2Instances(mo2Exe) }));
+
+ipcMain.handle('browse-file', async (event, filters) => {
+    const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: filters || [] });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+});
+
+// Launch SKSE through MO2 so the game sees the VFS-mounted modlist
+ipcMain.handle('launch-mo2', async (event, { gameDir, mo2 }) => {
+    const inst = resolveMO2(mo2);
+    if (!inst) return { success: false, error: 'MO2 instance not found, check MO2 settings' };
+    const sksePath = path.join(gameDir, 'skse64_loader.exe');
+    if (!fs.existsSync(sksePath)) return { success: false, error: `File not found: ${sksePath}` };
+    if (isMO2Running()) {
+        return { success: false, error: 'Mod Organizer 2 is already running. Close MO2, then launch again.' };
+    }
+
+    // Keep the mod folder current before MO2 mounts it
+    syncPayloadPlatform(getMO2ModDir(inst));
+
+    const args = [];
+    // -i "" forces the portable instance, otherwise MO2 opens the last-used one
+    if (inst.portable) args.push('-i', '');
+    else if (inst.name) args.push('-i', inst.name);
+    if (mo2.profile) args.push('-p', mo2.profile);
+    // Prefer a registered SKSE executable entry, fall back to the run command
+    const skse = inst.executables.find(e => /skse64_loader\.exe\s*$/i.test(e.binary || ''));
+    if (skse) args.push(`moshortcut://${inst.portable ? '' : inst.name}:${skse.title}`);
+    else args.push('run', sksePath);
+
+    return spawnDetachedThenQuit(mo2.exe, args, path.dirname(mo2.exe));
 });
 
 // ── Skyrim detection ─────────────────────────────────────────────────────────
@@ -359,7 +649,7 @@ function findSkyrimPath() {
 // the user's other mods.
 const getManifestFile = () => path.join(getConfigFolder(), 'install-manifest.json');
 
-function installSkymp(gameDir) {
+function installSkymp(gameDir, mo2) {
     if (!gameDir || !fs.existsSync(gameDir)) {
         return { success: false, error: 'Game directory not found' };
     }
@@ -368,6 +658,18 @@ function installSkymp(gameDir) {
     if (!fs.existsSync(payloadDir)) {
         return { success: false, error: 'SkyMP payload missing from launcher install' };
     }
+
+    // In MO2 mode the instance must resolve before any file is touched
+    let inst = null;
+    if (mo2 && mo2.enabled) {
+        inst = resolveMO2(mo2);
+        if (!inst) return { success: false, error: 'MO2 instance not found, check MO2 settings' };
+        if (isMO2Running()) {
+            return { success: false, error: 'Mod Organizer 2 is running. Close MO2, then try again.' };
+        }
+    }
+    const modDir = inst ? getMO2ModDir(inst) : null;
+    const targetFor = makeTargetMapper(gameDir, modDir);
 
     // Load existing manifest so reinstalls accumulate rather than overwrite
     const manifest = loadManifest();
@@ -378,43 +680,92 @@ function installSkymp(gameDir) {
     let installed = 0;
     let overwritten = 0;
 
-    function copyDir(src, dest) {
-        const dirCreated = !fs.existsSync(dest);
-        if (dirCreated) {
-            fs.mkdirSync(dest, { recursive: true });
-            dirsSet.add(dest);
+    // Record every directory this install creates so uninstall can prune them
+    const ensureDir = (dir) => {
+        const missing = [];
+        let d = dir;
+        while (!fs.existsSync(d)) {
+            missing.push(d);
+            const parent = path.dirname(d);
+            // Stop at the filesystem root, mkdirSync below reports a dead drive
+            if (parent === d) break;
+            d = parent;
         }
-        for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+        if (missing.length) fs.mkdirSync(dir, { recursive: true });
+        missing.forEach(m => dirsSet.add(m));
+    };
+
+    function copyPayload(relDir) {
+        for (const entry of fs.readdirSync(path.join(payloadDir, relDir), { withFileTypes: true })) {
             // Skip Windows shell metadata files — they're auto-generated and
             // protected by the OS; trying to overwrite them throws EPERM.
             if (entry.name.toLowerCase() === 'desktop.ini') continue;
-            const srcPath  = path.join(src, entry.name);
-            const destPath = path.join(dest, entry.name);
+            const rel = relDir ? path.join(relDir, entry.name) : entry.name;
             if (entry.isDirectory()) {
-                copyDir(srcPath, destPath);
-            } else {
-                const existed = fs.existsSync(destPath);
-                fs.copyFileSync(srcPath, destPath);
-                filesSet.add(destPath);
-                if (existed) overwritten++;
-                else installed++;
+                copyPayload(rel);
+                continue;
             }
+            const destPath = targetFor(rel);
+            ensureDir(path.dirname(destPath));
+            const existed = fs.existsSync(destPath);
+            fs.copyFileSync(path.join(payloadDir, rel), destPath);
+            filesSet.add(destPath);
+            if (existed) overwritten++;
+            else installed++;
         }
     }
 
-    try {
-        copyDir(payloadDir, gameDir);
-        // Persist the manifest so uninstall (including via Add/Remove Programs)
-        // knows exactly what to remove.
+    // Persist the manifest so uninstall (including via Add/Remove Programs)
+    // knows exactly what to remove. Called on every exit path so files copied
+    // before a failure are still tracked and can be cleaned up later.
+    const persistManifest = () => {
         saveManifest({
             gameDir: manifest.gameDir,
             installedAt: manifest.installedAt || new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             files: Array.from(filesSet),
             dirs:  Array.from(dirsSet),
+            mo2: manifest.mo2 || null,
         });
+    };
+
+    try {
+        copyPayload('');
+        if (inst) {
+            // Give the mod a meta.ini so MO2 lists it cleanly. gameName must be
+            // the MO2 short name or MO2 flags the mod as for a different game.
+            ensureDir(modDir);
+            const metaPath = path.join(modDir, 'meta.ini');
+            if (!fs.existsSync(metaPath)) {
+                fs.writeFileSync(metaPath,
+                    `[General]\ngameName=SkyrimSE\nversion=1.0.0\ncomments=Installed by the VengefulRealms launcher\n`,
+                    'utf8');
+                filesSet.add(metaPath);
+            }
+            // Track every mod folder and modlist we ever touched, a profile or
+            // instance switch must not orphan entries written on earlier installs
+            const prev = manifest.mo2 || {};
+            const modDirs = new Set(prev.modDirs || (prev.modDir ? [prev.modDir] : []));
+            modDirs.add(modDir);
+            const modlistFiles = new Set(prev.modlistFiles || (prev.modlistFile ? [prev.modlistFile] : []));
+            const enabled = enableModInProfile(inst, mo2.profile);
+            if (enabled.success) modlistFiles.add(enabled.modlistFile);
+            manifest.mo2 = {
+                modDir,
+                modDirs: Array.from(modDirs),
+                profile: mo2.profile || inst.selectedProfile,
+                modlistFiles: Array.from(modlistFiles),
+            };
+            if (!enabled.success) {
+                persistManifest();
+                return { success: false, error: enabled.error };
+            }
+        }
+        persistManifest();
         return { success: true, installed, overwritten };
     } catch (err) {
+        // Keep whatever was recorded so uninstall can still clean up
+        try { persistManifest(); } catch (_) {}
         return { success: false, error: err.message };
     }
 }
@@ -442,6 +793,11 @@ function uninstallSkymp(gameDir) {
 
     if (!targetGameDir) {
         return { success: false, error: 'No game directory recorded — nothing to uninstall' };
+    }
+
+    // A running MO2 would revert our modlist.txt edit when it exits
+    if (manifest.mo2 && isMO2Running()) {
+        return { success: false, error: 'Mod Organizer 2 is running. Close MO2, then uninstall again.', removed: 0, missing: 0, errors: [] };
     }
 
     let removed = 0;
@@ -541,7 +897,30 @@ function uninstallSkymp(gameDir) {
         }
     }
 
-    // 2) Always also try to clean these even if absent from the manifest:
+    // 2) MO2 mode: drop our modlist.txt entries and remove every mod folder we
+    //    ever wrote to (older manifests only have the singular fields)
+    if (manifest.mo2) {
+        const modlistFiles = manifest.mo2.modlistFiles || (manifest.mo2.modlistFile ? [manifest.mo2.modlistFile] : []);
+        for (const mf of modlistFiles) {
+            if (!fs.existsSync(mf)) continue;
+            try {
+                const lines = fs.readFileSync(mf, 'utf8').split(/\r?\n/)
+                    .filter(l => !((l.startsWith('+') || l.startsWith('-')) && l.slice(1).trim() === MO2_MOD_NAME));
+                fs.writeFileSync(mf, lines.join('\r\n'), 'utf8');
+            } catch (e) {
+                errors.push(`${mf}: ${e.message}`);
+            }
+        }
+        const modDirs = manifest.mo2.modDirs || (manifest.mo2.modDir ? [manifest.mo2.modDir] : []);
+        for (const md of modDirs) {
+            if (!fs.existsSync(md)) continue;
+            const r = removeWithRetry(md, { recursiveDir: true });
+            if (r.ok && !r.missing) removed++;
+            else if (!r.ok) errors.push(`${md}: ${r.error}`);
+        }
+    }
+
+    // 3) Always also try to clean these even if absent from the manifest:
     //    the generated client settings + PluginsDev dir + LiveKit DLLs in root.
     const extraTargets = [
         path.join(targetGameDir, 'Data', 'Platform', 'Plugins', 'skymp5-client-settings.txt'),
@@ -556,7 +935,7 @@ function uninstallSkymp(gameDir) {
         else if (!r.ok) errors.push(`${p}: ${r.error}`);
     }
 
-    // 3) Clear the manifest itself so a subsequent install starts fresh
+    // 4) Clear the manifest itself so a subsequent install starts fresh
     try {
         const f = getManifestFile();
         if (fs.existsSync(f)) fs.unlinkSync(f);
@@ -566,12 +945,14 @@ function uninstallSkymp(gameDir) {
 }
 
 // ── Write skymp5-client-settings.txt ─────────────────────────────────────────
-function writeClientSettings(gameDir, profileID, serverIP) {
+// opts.platformBase overrides where the Platform tree lives (MO2 mod folder)
+function writeClientSettings(gameDir, profileID, serverIP, opts = {}) {
     if (!gameDir || !fs.existsSync(gameDir)) {
         return { success: false, error: 'Game directory not found' };
     }
 
-    const pluginsDir = path.join(gameDir, 'Data', 'Platform', 'Plugins');
+    const platformBase = opts.platformBase || path.join(gameDir, 'Data');
+    const pluginsDir = path.join(platformBase, 'Platform', 'Plugins');
     const settingsPath = path.join(pluginsDir, 'skymp5-client-settings.txt');
 
     // Create Plugins dir if missing
@@ -580,13 +961,17 @@ function writeClientSettings(gameDir, profileID, serverIP) {
     }
 
     // Create PluginsDev dir to prevent DirectoryMonitor error on launch
-    const pluginsDevDir = path.join(gameDir, 'Data', 'Platform', 'PluginsDev');
+    const pluginsDevDir = path.join(platformBase, 'Platform', 'PluginsDev');
     if (!fs.existsSync(pluginsDevDir)) {
         fs.mkdirSync(pluginsDevDir, { recursive: true });
     }
 
+    // Supply the logged-in identity so the server can tie the session to a user
+    const gameData = { profileId: profileID };
+    if (opts.email) gameData.email = opts.email;
+
     const content = {
-        gameData:               { profileId: profileID },
+        gameData,
         master:                 SERVER_MASTER,
         'server-ip':            serverIP,
         'server-port':          SERVER_PORT,

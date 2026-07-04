@@ -374,6 +374,28 @@
                 <label>Launch Arguments</label>
                 <input id="launchArgsInput" value="-vrp -noborder" maxlength="120">
 
+                <label class="remember-me-row">
+                    <input type="checkbox" id="useMO2Check">
+                    <span>Launch through Mod Organizer 2</span>
+                </label>
+
+                <div id="mo2Settings" class="mo2-settings" style="display:none;">
+                    <label>ModOrganizer.exe</label>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <input id="mo2PathInput" placeholder="Path to ModOrganizer.exe" style="flex:1;">
+                        <button class="skyrim-small-button" id="mo2DetectBtn">Detect</button>
+                        <button class="skyrim-small-button" id="mo2BrowseBtn">Browse</button>
+                    </div>
+
+                    <label>MO2 Instance</label>
+                    <select id="mo2InstanceSelect"></select>
+
+                    <label>MO2 Profile</label>
+                    <select id="mo2ProfileSelect"></select>
+
+                    <small>VengefulRealms files install as the MO2 mod "VengefulRealms SkyMP" and the game starts through MO2, so your modlist stays active.</small>
+                </div>
+
                 <div class="settings-grid">
                     <button class="skyrim-small-button" id="saveSettingsBtn">Save Settings</button>
                     <button class="skyrim-small-button" id="resetSettingsBtn">Reset</button>

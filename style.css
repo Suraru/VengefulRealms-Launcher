@@ -888,7 +888,8 @@ img {
 }
 
 .auth-form-modal input,
-.settings-body input {
+.settings-body input,
+.settings-body select {
     height: 44px;
     padding: 0 14px;
     color: var(--text);
@@ -899,8 +900,15 @@ img {
 }
 
 .auth-form-modal input:focus,
-.settings-body input:focus {
+.settings-body input:focus,
+.settings-body select:focus {
     border-color: var(--line-strong);
+}
+
+.mo2-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
 }
 
 .auth-btn-modal {

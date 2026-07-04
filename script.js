@@ -16,7 +16,6 @@ const users = [
 let currentUser = null;
 let selectedServer = null;
 let downloadProgress = 100;
-let updateInterval = null;
 
 const authModal = document.getElementById("authModal");
 const settingsModal = document.getElementById("settingsModal");
@@ -76,7 +75,129 @@ function openSettingsModal() {
     if (!settingsModal) return;
     settingsModal.classList.add("show");
     settingsModal.setAttribute("aria-hidden", "false");
+    populateSettingsForm();
     triggerLauncherAction("open_settings");
+}
+
+// ── Mod Organizer 2 settings ──────────────────────────────────────────────────
+let mo2Instances = [];
+
+// Saved MO2 selection in the shape the main process handlers expect
+function getMO2Opts() {
+    if (!launcherSettings?.useMO2 || !launcherSettings?.mo2Exe) return null;
+    return {
+        enabled: true,
+        exe: launcherSettings.mo2Exe,
+        instance: launcherSettings.mo2Instance || '',
+        profile: launcherSettings.mo2Profile || ''
+    };
+}
+
+async function populateSettingsForm() {
+    if (!launcherSettings) launcherSettings = await window.vgf_functions.loadSettings() || {};
+
+    const gamePathInput = document.getElementById('gamePathInput');
+    if (gamePathInput) gamePathInput.value = launcherSettings.gameDir || '';
+
+    const useMO2Check = document.getElementById('useMO2Check');
+    const mo2PathInput = document.getElementById('mo2PathInput');
+    if (useMO2Check) useMO2Check.checked = !!launcherSettings.useMO2;
+    if (mo2PathInput) mo2PathInput.value = launcherSettings.mo2Exe || '';
+    toggleMO2Section();
+    await refreshMO2Selects(launcherSettings.mo2Instance, launcherSettings.mo2Profile);
+}
+
+function toggleMO2Section() {
+    const on = document.getElementById('useMO2Check')?.checked;
+    const section = document.getElementById('mo2Settings');
+    if (section) section.style.display = on ? '' : 'none';
+}
+
+// Rebuild the instance dropdown from the MO2 path, keeping saved picks if valid.
+// The in-flight promise is tracked so Save can await it instead of reading
+// selects that a pending refresh just cleared.
+let mo2RefreshPromise = null;
+
+function refreshMO2Selects(preferredInstance, preferredProfile) {
+    mo2RefreshPromise = doRefreshMO2Selects(preferredInstance, preferredProfile);
+    return mo2RefreshPromise;
+}
+
+async function doRefreshMO2Selects(preferredInstance, preferredProfile) {
+    const instanceSelect = document.getElementById('mo2InstanceSelect');
+    const profileSelect = document.getElementById('mo2ProfileSelect');
+    if (!instanceSelect || !profileSelect) return;
+
+    instanceSelect.innerHTML = '';
+    profileSelect.innerHTML = '';
+    mo2Instances = [];
+
+    const exe = document.getElementById('mo2PathInput')?.value?.trim();
+    if (!exe) return;
+
+    try {
+        const info = await window.vgf_functions.getMO2Info(exe);
+        mo2Instances = info?.instances || [];
+    } catch (_) {
+        mo2Instances = [];
+    }
+
+    for (const inst of mo2Instances) {
+        const opt = document.createElement('option');
+        opt.value = inst.name;
+        const label = inst.portable ? 'Portable (next to ModOrganizer.exe)' : inst.name;
+        // Flag instances managing another game so nobody deploys into Fallout
+        const isSkyrim = /skyrim/i.test(inst.gameName || '');
+        opt.textContent = isSkyrim || !inst.gameName ? label : `${label} (${inst.gameName})`;
+        instanceSelect.appendChild(opt);
+    }
+
+    const hasPreferred = preferredInstance !== undefined && preferredInstance !== null
+        && mo2Instances.some(i => i.name === preferredInstance);
+    if (hasPreferred) {
+        instanceSelect.value = preferredInstance;
+    } else if (preferredInstance) {
+        // Keep the saved-but-missing instance selected instead of silently
+        // swapping to whatever enumerates first
+        const opt = document.createElement('option');
+        opt.value = preferredInstance;
+        opt.textContent = `${preferredInstance} (not found)`;
+        instanceSelect.insertBefore(opt, instanceSelect.firstChild);
+        instanceSelect.value = preferredInstance;
+    } else {
+        // No saved pick: default to the first Skyrim instance if there is one
+        const skyrim = mo2Instances.find(i => /skyrim/i.test(i.gameName || ''));
+        if (skyrim) instanceSelect.value = skyrim.name;
+    }
+    populateMO2Profiles(preferredProfile);
+}
+
+function populateMO2Profiles(preferredProfile) {
+    const instanceSelect = document.getElementById('mo2InstanceSelect');
+    const profileSelect = document.getElementById('mo2ProfileSelect');
+    if (!instanceSelect || !profileSelect) return;
+
+    profileSelect.innerHTML = '';
+    const inst = mo2Instances.find(i => i.name === instanceSelect.value);
+    if (!inst) return;
+
+    for (const p of inst.profiles) {
+        const opt = document.createElement('option');
+        opt.value = p;
+        opt.textContent = p;
+        profileSelect.appendChild(opt);
+    }
+    const preferred = preferredProfile || inst.selectedProfile;
+    if (preferred && inst.profiles.includes(preferred)) {
+        profileSelect.value = preferred;
+    } else if (preferredProfile) {
+        // Same rule as instances: surface a missing saved profile, don't swap it
+        const opt = document.createElement('option');
+        opt.value = preferredProfile;
+        opt.textContent = `${preferredProfile} (not found)`;
+        profileSelect.insertBefore(opt, profileSelect.firstChild);
+        profileSelect.value = preferredProfile;
+    }
 }
 
 function closeSettingsModal() {
@@ -334,7 +455,8 @@ function setActiveSection(section) {
     if (navButton) navButton.click();
 }
 
-function setDownloadProgress(percent, label = "Updating mod pack") {
+// statusText overrides the mod pack tile, needed for done-but-unhealthy states
+function setDownloadProgress(percent, label = "Updating mod pack", statusText = null) {
     const value = Math.max(0, Math.min(100, Number(percent) || 0));
     downloadProgress = value;
 
@@ -345,36 +467,76 @@ function setDownloadProgress(percent, label = "Updating mod pack") {
 
     if (fill) fill.style.width = `${value}%`;
     if (percentText) percentText.textContent = `${Math.round(value)}%`;
-    if (stateLabel) stateLabel.textContent = value >= 100 ? "Files verified and ready" : label;
-    if (modpackStatusText) modpackStatusText.textContent = value >= 100 ? "Mod Pack Current" : "Update Required";
+    if (stateLabel) stateLabel.textContent = label;
+    if (modpackStatusText) modpackStatusText.textContent = statusText || (value >= 100 ? "Mod Pack Current" : "Update Required");
 
     updateReadyState();
 }
 
-function simulateUpdate() {
-    if (updateInterval) clearInterval(updateInterval);
+// MO2 mode is on but the exe path was never set, block instead of silently
+// falling back to a bare game-folder install that would bypass the user's VFS
+function mo2ConfigMissing() {
+    if (!launcherSettings?.useMO2 || getMO2Opts()) return false;
+    showToast('MO2 mode is on but not configured. Set the ModOrganizer.exe path in Settings.', true);
+    openSettingsModal();
+    return true;
+}
 
-    setActiveSection("mods");
-    setDownloadProgress(0, "Checking manifest");
-    showToast("Checking for updates");
-    triggerLauncherAction("check_updates");
+// Real payload verification, offers a repair (reinstall) when files are off
+async function runFileVerification() {
+    if (!launcherSettings?.gameDir) {
+        showToast('Set your Skyrim directory in Settings first.', true);
+        openSettingsModal();
+        return;
+    }
+    if (mo2ConfigMissing()) return;
 
-    let progress = 0;
-    updateInterval = setInterval(() => {
-        progress += Math.floor(Math.random() * 9) + 6;
-        if (progress >= 100) {
-            progress = 100;
-            clearInterval(updateInterval);
-            updateInterval = null;
-            setDownloadProgress(progress, "Files verified and ready");
-            showToast("Launcher files are current");
-            triggerLauncherAction("update_complete");
+    setActiveSection('mods');
+    setDownloadProgress(10, 'Verifying files');
+    triggerLauncherAction('verify_files');
+
+    try {
+        const mo2 = getMO2Opts();
+        const result = await window.vgf_functions.verifyFiles(launcherSettings.gameDir, mo2);
+        if (!result.success) {
+            setDownloadProgress(100, 'Verification unavailable', 'Not Verified');
+            showToast(result.error || 'Verification failed', true);
             return;
         }
 
-        const label = progress < 35 ? "Checking manifest" : progress < 75 ? "Updating collection" : "Verifying files";
-        setDownloadProgress(progress, label);
-    }, 260);
+        const problems = result.missing.length + result.mismatched.length;
+        if (problems === 0) {
+            setDownloadProgress(100, `All ${result.checked} files verified`);
+            showToast('All files verified');
+            return;
+        }
+
+        setDownloadProgress(50, `${problems} file(s) need repair`);
+        const fix = confirm(
+            `File check found problems:\n\n` +
+            `Missing: ${result.missing.length}\n` +
+            `Mismatched: ${result.mismatched.length}\n\n` +
+            `Repair now? This reinstalls the VengefulRealms files.`
+        );
+        if (!fix) {
+            setDownloadProgress(100, `${problems} file(s) still need repair`, 'Repair Needed');
+            return;
+        }
+
+        setDownloadProgress(75, 'Repairing files');
+        const install = await window.vgf_functions.installSkymp(launcherSettings.gameDir, mo2);
+        if (!install.success) {
+            setDownloadProgress(100, 'Repair failed', 'Repair Needed');
+            showToast('Repair failed: ' + (install.error || 'unknown error'), true);
+            return;
+        }
+        setDownloadProgress(100, 'Files repaired and verified');
+        showToast(`Repaired ${(install.installed || 0) + (install.overwritten || 0)} file(s)`);
+    } catch (err) {
+        // Never leave the progress gate stuck below 100 on an unexpected error
+        setDownloadProgress(100, 'Verification error', 'Not Verified');
+        showToast('Verification error: ' + (err?.message || err), true);
+    }
 }
 
 function setupButtons() {
@@ -399,15 +561,8 @@ function setupButtons() {
     if (showSignupBtnModal) showSignupBtnModal.addEventListener("click", showSignupFormModal);
     if (showLoginBtnModal) showLoginBtnModal.addEventListener("click", showLoginFormModal);
     if (joinBtn) joinBtn.addEventListener("click", onJoinGame);
-    if (checkUpdatesBtn) checkUpdatesBtn.addEventListener("click", simulateUpdate);
-
-    if (repairBtn) {
-        repairBtn.addEventListener("click", () => {
-            showToast("Verifying files");
-            triggerLauncherAction("verify_files");
-            simulateUpdate();
-        });
-    }
+    if (checkUpdatesBtn) checkUpdatesBtn.addEventListener("click", runFileVerification);
+    if (repairBtn) repairBtn.addEventListener("click", runFileVerification);
 
     if (openFolderBtn) {
         openFolderBtn.addEventListener("click", () => {
@@ -435,6 +590,9 @@ function setupButtons() {
                 const msg = `Uninstalled — ${result.removed} item(s) removed` +
                     (result.missing ? `, ${result.missing} already absent` : '');
                 showToast(msg);
+            } else if (result.error && !(result.errors || []).length) {
+                // Precondition failure (e.g. MO2 still running), nothing was removed
+                showToast(result.error, true);
             } else {
                 // Loud, blocking dialog instead of an easy-to-miss toast.
                 // Lists exactly what couldn't be removed so the user can act.
@@ -460,18 +618,76 @@ function setupButtons() {
     }
 
     if (saveSettingsBtn) {
-        saveSettingsBtn.addEventListener("click", () => {
-            const gameDir = document.getElementById("gamePathInput")?.value?.trim() || "";
-            if (launcherSettings) launcherSettings.gameDir = gameDir;
-            window.vgf_functions.saveSettings(
-                gameDir,
-                launcherSettings?.profileID || 1,
-                launcherSettings?.serverIP || '141.195.99.135'
-            );
+        saveSettingsBtn.addEventListener("click", async () => {
+            // A path edit right before the click clears the selects and refills
+            // them async, wait for that refresh before reading their values
+            if (mo2RefreshPromise) {
+                try { await mo2RefreshPromise; } catch (_) {}
+            }
+            launcherSettings = launcherSettings || {};
+            launcherSettings.gameDir = document.getElementById("gamePathInput")?.value?.trim() || "";
+            launcherSettings.profileID = launcherSettings.profileID || 1;
+            launcherSettings.serverIP = launcherSettings.serverIP || '141.195.99.135';
+            launcherSettings.useMO2 = !!document.getElementById('useMO2Check')?.checked;
+            launcherSettings.mo2Exe = document.getElementById('mo2PathInput')?.value?.trim() || '';
+            if (launcherSettings.useMO2 && !launcherSettings.mo2Exe) {
+                showToast('Set the ModOrganizer.exe path or turn MO2 mode off', true);
+                return;
+            }
+            // Only overwrite the saved instance/profile when we actually found
+            // instances, a failed enumeration must not turn a named instance
+            // into an empty (portable) one
+            if (mo2Instances.length > 0) {
+                launcherSettings.mo2Instance = document.getElementById('mo2InstanceSelect')?.value || '';
+                launcherSettings.mo2Profile = document.getElementById('mo2ProfileSelect')?.value || '';
+            }
+            // Full-object save keeps MO2 fields, wizardComplete, and credentials intact
+            window.vgf_functions.saveFullSettings(launcherSettings);
             showToast("Settings saved");
             closeSettingsModal();
         });
     }
+
+    // MO2 settings controls
+    const useMO2Check = document.getElementById('useMO2Check');
+    if (useMO2Check) useMO2Check.addEventListener('change', toggleMO2Section);
+
+    const mo2DetectBtn = document.getElementById('mo2DetectBtn');
+    if (mo2DetectBtn) {
+        mo2DetectBtn.addEventListener('click', async () => {
+            const found = await window.vgf_functions.detectMO2();
+            if (found) {
+                const mo2PathInput = document.getElementById('mo2PathInput');
+                if (mo2PathInput) mo2PathInput.value = found;
+                await refreshMO2Selects();
+                showToast('Mod Organizer 2 found');
+            } else {
+                showToast('MO2 not found, set the path manually', true);
+            }
+        });
+    }
+
+    const mo2BrowseBtn = document.getElementById('mo2BrowseBtn');
+    if (mo2BrowseBtn) {
+        mo2BrowseBtn.addEventListener('click', async () => {
+            const chosen = await window.vgf_functions.browseFile([{ name: 'ModOrganizer', extensions: ['exe'] }]);
+            if (chosen) {
+                const mo2PathInput = document.getElementById('mo2PathInput');
+                if (mo2PathInput) mo2PathInput.value = chosen;
+                await refreshMO2Selects();
+            }
+        });
+    }
+
+    const mo2PathInput = document.getElementById('mo2PathInput');
+    if (mo2PathInput) {
+        // Keep the saved picks selected when the path is edited
+        mo2PathInput.addEventListener('change', () =>
+            refreshMO2Selects(launcherSettings?.mo2Instance, launcherSettings?.mo2Profile));
+    }
+
+    const mo2InstanceSelect = document.getElementById('mo2InstanceSelect');
+    if (mo2InstanceSelect) mo2InstanceSelect.addEventListener('change', () => populateMO2Profiles());
 
     const browseBtn = document.getElementById("browseFolderBtn");
     if (browseBtn) {
@@ -775,6 +991,7 @@ async function showLaunchDialog() {
         openSettingsModal();
         return;
     }
+    if (mo2ConfigMissing()) return;
 
     const profileID = await showPrompt('Enter your Profile ID (any unique number):', String(launcherSettings.profileID || ''));
     if (!profileID) return;
@@ -789,9 +1006,11 @@ async function showLaunchDialog() {
     launcherSettings.profileID = idNum;
     window.vgf_functions.saveSettings(launcherSettings.gameDir, idNum, launcherSettings.serverIP);
 
-    // Install SkyMP files into Skyrim folder if needed
+    const mo2 = getMO2Opts();
+
+    // Install SkyMP files (game folder, or MO2 mod folder when MO2 mode is on)
     showToast('Installing SkyMP files…');
-    const skymp = await window.vgf_functions.installSkymp(launcherSettings.gameDir);
+    const skymp = await window.vgf_functions.installSkymp(launcherSettings.gameDir, mo2);
     if (!skymp.success) {
         showToast('SkyMP install failed: ' + (skymp.error || 'unknown error'), true);
         return;
@@ -799,10 +1018,20 @@ async function showLaunchDialog() {
 
     // Write skymp5-client-settings.txt and clean conflicting files
     showToast('Preparing game files…');
-    const result = await window.vgf_functions.updateClientCfg(launcherSettings.gameDir, idNum, launcherSettings.serverIP);
+    const result = await window.vgf_functions.updateClientCfg(launcherSettings.gameDir, idNum, launcherSettings.serverIP, currentUser?.email || null, mo2);
 
     if (!result.success) {
         showToast(result.error || 'Setup failed.', true);
+        return;
+    }
+
+    // MO2 mode hands SKSE off to ModOrganizer so the VFS modlist is active
+    if (mo2) {
+        showToast(`Launching through MO2, profile ${idNum}`);
+        const launch = await window.vgf_functions.launchMO2(launcherSettings.gameDir, mo2);
+        if (!launch.success) {
+            showToast('Launch failed: ' + (launch.error || 'unknown error'), true);
+        }
         return;
     }
 
